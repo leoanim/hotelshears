@@ -7,8 +7,6 @@ from datetime import datetime, timedelta
 import json
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.firefox.service import Service as FirefoxService
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -18,6 +16,10 @@ import re
 from functools import lru_cache
 import threading
 import logging
+
+# Ajouts pour Chrome
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuration des logs
 logging.basicConfig(
@@ -40,45 +42,42 @@ class HotelSearchProvider:
     def search(self, query):
         raise NotImplementedError("Les fournisseurs doivent implémenter la méthode search")
 
-class BookingScraperProvider(HotelSearchProvider):
+class BookingScraperChromeProvider(HotelSearchProvider):
     def __init__(self):
-        logger.info("Initialisation du BookingScraperProvider")
+        logger.info("Initialisation du BookingScraperChromeProvider")
         self.ua = UserAgent()
-        firefox_options = FirefoxOptions()
-        firefox_options.add_argument('--headless')
-        firefox_options.add_argument('--disable-blink-features=AutomationControlled')
-        firefox_options.add_argument('--disable-notifications')
-        firefox_options.add_argument('--lang=fr-FR')
-        firefox_options.add_argument('--no-sandbox')
-        firefox_options.add_argument('--disable-dev-shm-usage')
-        firefox_options.add_argument('--disable-gpu')
-        firefox_options.add_argument('--remote-debugging-port=9222')
-        firefox_options.add_argument('--disable-extensions')
-        firefox_options.add_argument('--disable-sync')
-        firefox_options.add_argument('--disable-default-apps')
-        firefox_options.set_preference('general.useragent.override', self.ua.random)
-        firefox_options.set_preference('dom.webdriver.enabled', False)
-        firefox_options.set_preference('useAutomationExtension', False)
-        firefox_options.set_preference('network.http.connection-timeout', 10)
-        firefox_options.set_preference('network.http.response-timeout', 10)
+        chrome_options = ChromeOptions()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--lang=fr-FR')
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.add_argument(f"user-agent={self.ua.random}")
         
         self.driver = None
-        self.options = firefox_options
-        logger.info("BookingScraperProvider initialisé avec succès")
+        self.options = chrome_options
+        logger.info("BookingScraperChromeProvider initialisé avec succès")
 
     def get_driver(self):
         if self.driver is None:
             try:
-                logger.info("Création d'une nouvelle instance du driver Firefox")
+                logger.info("Création d'une nouvelle instance du driver Chrome")
                 start_time = time.time()
-                self.driver = webdriver.Firefox(options=self.options)
-                self.driver.set_page_load_timeout(10)
-                self.driver.set_script_timeout(10)
+                chrome_binary = os.getenv('CHROME_BIN', None)
+                if chrome_binary:
+                    self.options.binary_location = chrome_binary
+                    logger.info(f"Utilisation du binaire Chrome : {chrome_binary}")
+                
+                self.driver = webdriver.Chrome(ChromeDriverManager().install(), options=self.options)
+                self.driver.set_page_load_timeout(5)
+                self.driver.set_script_timeout(5)
                 self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 end_time = time.time()
-                logger.info(f"Driver Firefox créé avec succès en {end_time - start_time:.2f} secondes")
+                logger.info(f"Driver Chrome créé avec succès en {end_time - start_time:.2f} secondes")
             except Exception as e:
-                logger.error(f"Erreur lors de la création du driver Firefox: {str(e)}")
+                logger.error(f"Erreur lors de la création du driver Chrome: {str(e)}")
                 if self.driver:
                     try:
                         self.driver.quit()
@@ -103,7 +102,7 @@ class BookingScraperProvider(HotelSearchProvider):
 
     def search(self, query):
         logger.info(f"Début de la recherche pour : {query}")
-        cache_key = f"booking_{query}"
+        cache_key = f"booking_chrome_{query}"
         current_time = time.time()
         
         with cache_lock:
@@ -125,10 +124,10 @@ class BookingScraperProvider(HotelSearchProvider):
             logger.info(f"Accès à l'URL : {url}")
             
             driver.get(url)
-            time.sleep(1)  # Réduit à 1 seconde
+            time.sleep(0.5)
             logger.info("Page chargée, attente des éléments...")
 
-            wait = WebDriverWait(driver, 5)  # Réduit à 5 secondes
+            wait = WebDriverWait(driver, 3)
             try:
                 hotel_cards = wait.until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div[data-testid="property-card"]'))
@@ -142,8 +141,8 @@ class BookingScraperProvider(HotelSearchProvider):
             hotel_cards = soup.find_all('div', {'data-testid': 'property-card'})
             
             results = []
-            for index, card in enumerate(hotel_cards[:2], 1):  # Réduit à 2 hôtels
-                logger.info(f"Traitement de l'hôtel {index}/2")
+            for index, card in enumerate(hotel_cards[:5], 1):
+                logger.info(f"Traitement de l'hôtel {index}/5")
                 try:
                     title_element = card.find('div', {'data-testid': 'title'})
                     if not title_element:
@@ -166,7 +165,6 @@ class BookingScraperProvider(HotelSearchProvider):
                         "source": "Booking.com"
                     }
 
-                    # Extraction rapide des données
                     if address_element := card.find('span', {'data-testid': 'address'}):
                         hotel_data["location"] = address_element.text.strip()
                     
@@ -206,21 +204,21 @@ class BookingScraperProvider(HotelSearchProvider):
             
             return results
         except Exception as e:
-            logger.error(f"Erreur générale du Booking Scraper: {str(e)}")
+            logger.error(f"Erreur générale du Booking Scraper (Chrome): {str(e)}")
             return []
         finally:
             if self.driver:
                 try:
                     self.driver.quit()
-                    logger.info("Driver Firefox fermé avec succès")
+                    logger.info("Driver Chrome fermé avec succès")
                 except:
-                    logger.error("Erreur lors de la fermeture du driver Firefox")
+                    logger.error("Erreur lors de la fermeture du driver Chrome")
                     pass
                 self.driver = None
 
 # Initialisation des fournisseurs
 providers = [
-    BookingScraperProvider()
+    BookingScraperChromeProvider()
 ]
 
 @app.route('/')
