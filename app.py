@@ -32,12 +32,22 @@ class BookingScraperProvider(HotelSearchProvider):
         firefox_options.add_argument('--disable-blink-features=AutomationControlled')
         firefox_options.add_argument('--disable-notifications')
         firefox_options.add_argument('--lang=fr-FR')
+        firefox_options.add_argument('--no-sandbox')
+        firefox_options.add_argument('--disable-dev-shm-usage')
         firefox_options.set_preference('general.useragent.override', self.ua.random)
         firefox_options.set_preference('dom.webdriver.enabled', False)
         firefox_options.set_preference('useAutomationExtension', False)
         
-        self.driver = webdriver.Firefox(options=firefox_options)
-        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        self.driver = None
+        self.options = firefox_options
+
+    def get_driver(self):
+        if self.driver is None:
+            self.driver = webdriver.Firefox(options=self.options)
+            self.driver.set_page_load_timeout(30)
+            self.driver.set_script_timeout(30)
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        return self.driver
 
     def extract_rating(self, text):
         try:
@@ -54,7 +64,7 @@ class BookingScraperProvider(HotelSearchProvider):
 
     def search(self, query):
         try:
-            # Formatage de la requête pour l'URL
+            driver = self.get_driver()
             search_query = query.replace(' ', '+')
             current_date = datetime.now()
             check_in = (current_date + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -62,11 +72,10 @@ class BookingScraperProvider(HotelSearchProvider):
             
             url = f"https://www.booking.com/searchresults.fr.html?ss={search_query}&checkin={check_in}&checkout={check_out}&lang=fr&selected_currency=EUR"
             
-            self.driver.get(url)
-            time.sleep(5)  # Attente plus longue pour le chargement
+            driver.get(url)
+            time.sleep(3)  # Réduit le temps d'attente initial
 
-            # Attente explicite pour les cartes d'hôtels
-            wait = WebDriverWait(self.driver, 10)
+            wait = WebDriverWait(driver, 10)
             try:
                 hotel_cards = wait.until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div[data-testid="property-card"]'))
@@ -75,21 +84,18 @@ class BookingScraperProvider(HotelSearchProvider):
                 print(f"Aucun hôtel trouvé: {str(e)}")
                 return []
             
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
             hotel_cards = soup.find_all('div', {'data-testid': 'property-card'})
             
             results = []
-            for card in hotel_cards[:10]:
+            for card in hotel_cards[:5]:  # Limite à 5 hôtels pour éviter les timeouts
                 try:
-                    # Extraction du nom avec fallback
                     title_element = card.find('div', {'data-testid': 'title'})
                     name = title_element.text.strip() if title_element else "Nom non disponible"
 
-                    # Extraction de l'adresse avec fallback
                     address_element = card.find('span', {'data-testid': 'address'})
                     location = address_element.text.strip() if address_element else "Adresse non disponible"
                     
-                    # Extraction du prix avec fallback
                     price = "Prix non disponible"
                     price_element = card.find('span', {'data-testid': 'price-and-discounted-price'})
                     if not price_element:
@@ -97,24 +103,21 @@ class BookingScraperProvider(HotelSearchProvider):
                     if price_element:
                         price = price_element.text.strip()
                     
-                    # Extraction de la note avec gestion d'erreur améliorée
                     rating = 0
                     score_element = card.find('div', {'data-testid': 'review-score'})
                     if score_element:
                         score_text = score_element.text.strip()
                         rating = self.extract_rating(score_text)
                     
-                    # Extraction de l'image avec fallback
                     image_url = ''
                     img_element = card.find('img', {'data-testid': 'image'})
                     if img_element and 'src' in img_element.attrs:
                         image_url = img_element['src']
                     
-                    # Extraction du lien avec fallback
                     booking_url = ''
                     link_element = card.find('a', {'data-testid': 'title-link'})
                     if not link_element:
-                        link_element = card.find('a', class_='e13098a59f')  # Classe alternative
+                        link_element = card.find('a', class_='e13098a59f')
                     
                     if link_element and 'href' in link_element.attrs:
                         href = link_element['href']
@@ -124,7 +127,6 @@ class BookingScraperProvider(HotelSearchProvider):
                             href = 'https://www.booking.com' + href
                         booking_url = href
 
-                    # Ne créer l'objet hotel que si nous avons au moins le nom
                     if name != "Nom non disponible":
                         hotel_data = {
                             "name": name,
@@ -145,7 +147,12 @@ class BookingScraperProvider(HotelSearchProvider):
             print(f"Erreur Booking Scraper: {str(e)}")
             return []
         finally:
-            self.driver.quit()
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+                self.driver = None
 
 # Initialisation des fournisseurs
 providers = [
