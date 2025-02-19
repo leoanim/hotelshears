@@ -52,9 +52,15 @@ class BookingScraperProvider(HotelSearchProvider):
         firefox_options.add_argument('--no-sandbox')
         firefox_options.add_argument('--disable-dev-shm-usage')
         firefox_options.add_argument('--disable-gpu')
+        firefox_options.add_argument('--remote-debugging-port=9222')
+        firefox_options.add_argument('--disable-extensions')
+        firefox_options.add_argument('--disable-sync')
+        firefox_options.add_argument('--disable-default-apps')
         firefox_options.set_preference('general.useragent.override', self.ua.random)
         firefox_options.set_preference('dom.webdriver.enabled', False)
         firefox_options.set_preference('useAutomationExtension', False)
+        firefox_options.set_preference('network.http.connection-timeout', 10)
+        firefox_options.set_preference('network.http.response-timeout', 10)
         
         self.driver = None
         self.options = firefox_options
@@ -62,12 +68,24 @@ class BookingScraperProvider(HotelSearchProvider):
 
     def get_driver(self):
         if self.driver is None:
-            logger.info("Création d'une nouvelle instance du driver Firefox")
-            self.driver = webdriver.Firefox(options=self.options)
-            self.driver.set_page_load_timeout(20)
-            self.driver.set_script_timeout(20)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            logger.info("Driver Firefox créé avec succès")
+            try:
+                logger.info("Création d'une nouvelle instance du driver Firefox")
+                start_time = time.time()
+                self.driver = webdriver.Firefox(options=self.options)
+                self.driver.set_page_load_timeout(10)
+                self.driver.set_script_timeout(10)
+                self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                end_time = time.time()
+                logger.info(f"Driver Firefox créé avec succès en {end_time - start_time:.2f} secondes")
+            except Exception as e:
+                logger.error(f"Erreur lors de la création du driver Firefox: {str(e)}")
+                if self.driver:
+                    try:
+                        self.driver.quit()
+                    except:
+                        pass
+                    self.driver = None
+                raise e
         return self.driver
 
     def extract_rating(self, text):
@@ -95,6 +113,7 @@ class BookingScraperProvider(HotelSearchProvider):
                     logger.info(f"Résultats trouvés dans le cache pour : {query}")
                     return cached_result['data']
         
+        start_time = time.time()
         try:
             driver = self.get_driver()
             search_query = query.replace(' ', '+')
@@ -106,10 +125,10 @@ class BookingScraperProvider(HotelSearchProvider):
             logger.info(f"Accès à l'URL : {url}")
             
             driver.get(url)
-            time.sleep(2)
+            time.sleep(1)  # Réduit à 1 seconde
             logger.info("Page chargée, attente des éléments...")
 
-            wait = WebDriverWait(driver, 8)
+            wait = WebDriverWait(driver, 5)  # Réduit à 5 secondes
             try:
                 hotel_cards = wait.until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div[data-testid="property-card"]'))
@@ -123,8 +142,8 @@ class BookingScraperProvider(HotelSearchProvider):
             hotel_cards = soup.find_all('div', {'data-testid': 'property-card'})
             
             results = []
-            for index, card in enumerate(hotel_cards[:3], 1):
-                logger.info(f"Traitement de l'hôtel {index}/3")
+            for index, card in enumerate(hotel_cards[:2], 1):  # Réduit à 2 hôtels
+                logger.info(f"Traitement de l'hôtel {index}/2")
                 try:
                     title_element = card.find('div', {'data-testid': 'title'})
                     if not title_element:
@@ -147,50 +166,44 @@ class BookingScraperProvider(HotelSearchProvider):
                         "source": "Booking.com"
                     }
 
-                    address_element = card.find('span', {'data-testid': 'address'})
-                    if address_element:
+                    # Extraction rapide des données
+                    if address_element := card.find('span', {'data-testid': 'address'}):
                         hotel_data["location"] = address_element.text.strip()
-                        logger.debug(f"Adresse trouvée : {hotel_data['location']}")
                     
-                    price_element = card.find('span', {'data-testid': 'price-and-discounted-price'}) or card.find('span', {'data-testid': 'price'})
-                    if price_element:
+                    if price_element := (card.find('span', {'data-testid': 'price-and-discounted-price'}) or card.find('span', {'data-testid': 'price'})):
                         hotel_data["price"] = price_element.text.strip()
-                        logger.debug(f"Prix trouvé : {hotel_data['price']}")
                     
-                    score_element = card.find('div', {'data-testid': 'review-score'})
-                    if score_element:
+                    if score_element := card.find('div', {'data-testid': 'review-score'}):
                         hotel_data["rating"] = self.extract_rating(score_element.text.strip())
-                        logger.debug(f"Note trouvée : {hotel_data['rating']}/5")
                     
-                    img_element = card.find('img', {'data-testid': 'image'})
-                    if img_element and 'src' in img_element.attrs:
-                        hotel_data["image"] = img_element['src']
-                        logger.debug("Image trouvée")
+                    if img_element := card.find('img', {'data-testid': 'image'}):
+                        if 'src' in img_element.attrs:
+                            hotel_data["image"] = img_element['src']
                     
-                    link_element = card.find('a', {'data-testid': 'title-link'}) or card.find('a', class_='e13098a59f')
-                    if link_element and 'href' in link_element.attrs:
-                        href = link_element['href']
-                        if href.startswith('//'):
-                            href = 'https:' + href
-                        elif href.startswith('/'):
-                            href = 'https://www.booking.com' + href
-                        hotel_data["booking_url"] = href
-                        logger.debug(f"URL de réservation trouvée : {href}")
+                    if link_element := (card.find('a', {'data-testid': 'title-link'}) or card.find('a', class_='e13098a59f')):
+                        if 'href' in link_element.attrs:
+                            href = link_element['href']
+                            if href.startswith('//'):
+                                href = 'https:' + href
+                            elif href.startswith('/'):
+                                href = 'https://www.booking.com' + href
+                            hotel_data["booking_url"] = href
 
                     results.append(hotel_data)
                     logger.info(f"Hôtel {index} traité avec succès")
                 except Exception as e:
                     logger.error(f"Erreur lors du parsing de l'hôtel {index}: {str(e)}")
                     continue
+
+            end_time = time.time()
+            logger.info(f"Recherche terminée en {end_time - start_time:.2f} secondes, {len(results)} hôtels trouvés")
             
-            logger.info(f"Mise en cache des résultats pour : {query}")
             with cache_lock:
                 search_cache[cache_key] = {
                     'timestamp': current_time,
                     'data': results
                 }
             
-            logger.info(f"Recherche terminée, {len(results)} hôtels trouvés")
             return results
         except Exception as e:
             logger.error(f"Erreur générale du Booking Scraper: {str(e)}")
