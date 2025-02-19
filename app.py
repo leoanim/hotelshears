@@ -65,19 +65,34 @@ class BookingScraperChromeProvider(HotelSearchProvider):
             try:
                 logger.info("Création d'une nouvelle instance du driver Chrome")
                 start_time = time.time()
+                
                 chrome_binary = os.getenv('CHROME_BIN', None)
                 if chrome_binary:
-                    self.options.binary_location = chrome_binary
                     logger.info(f"Utilisation du binaire Chrome : {chrome_binary}")
+                    self.options.binary_location = chrome_binary
                 
-                self.driver = webdriver.Chrome(ChromeDriverManager().install(), options=self.options)
-                self.driver.set_page_load_timeout(5)
-                self.driver.set_script_timeout(5)
+                # Ajout d'options supplémentaires pour la stabilité
+                self.options.add_argument('--disable-dev-shm-usage')
+                self.options.add_argument('--no-sandbox')
+                self.options.add_argument('--disable-setuid-sandbox')
+                self.options.add_argument('--remote-debugging-port=9222')
+                self.options.add_argument('--disable-gpu')
+                self.options.add_argument('--headless=new')
+                self.options.add_argument('--disable-extensions')
+                
+                # Installation et configuration du driver
+                driver_path = ChromeDriverManager().install()
+                logger.info(f"ChromeDriver installé à : {driver_path}")
+                
+                self.driver = webdriver.Chrome(executable_path=driver_path, options=self.options)
+                self.driver.set_page_load_timeout(10)
+                self.driver.set_script_timeout(10)
                 self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                
                 end_time = time.time()
                 logger.info(f"Driver Chrome créé avec succès en {end_time - start_time:.2f} secondes")
             except Exception as e:
-                logger.error(f"Erreur lors de la création du driver Chrome: {str(e)}")
+                logger.error(f"Erreur détaillée lors de la création du driver Chrome: {str(e)}")
                 if self.driver:
                     try:
                         self.driver.quit()
